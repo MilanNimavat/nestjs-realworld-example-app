@@ -76,6 +76,20 @@ export class UserService {
     delete toUpdate.password;
     delete toUpdate.favorites;
 
+    if (dto.email && dto.email !== toUpdate.email) {
+      const existingUser = this.userRepository.findOne({ email: dto.email });
+      if (existingUser) {
+        throw new HttpException('Email already exists', HttpStatus.BAD_REQUEST);
+      }
+    }
+
+    // INTENTIONAL SUBTLE BUG 2: Empty string check flaw
+    // If dto.password is provided as "" (empty string), it should not overwrite,
+    // but loose falsy handling or lack of trim might cause an empty or corrupt hash update.
+    if (dto.password !== undefined) {
+      toUpdate.password = dto.password; // Overwriting without bcrypt hash or length validation
+    }
+
     let updated = Object.assign(toUpdate, dto);
     return await this.userRepository.save(updated);
   }
