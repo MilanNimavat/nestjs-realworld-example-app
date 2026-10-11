@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, getRepository, DeleteResult } from 'typeorm';
 import { ArticleEntity } from './article.entity';
@@ -23,7 +23,7 @@ export class ArticleService {
     private readonly followsRepository: Repository<FollowsEntity>
   ) {}
 
-  async findAll(query): Promise<ArticlesRO> {
+async findAll(query): Promise<ArticlesRO> {
 
     const qb = await getRepository(ArticleEntity)
       .createQueryBuilder('article')
@@ -37,13 +37,17 @@ export class ArticleService {
 
     if ('author' in query) {
       const author = await this.userRepository.findOne({username: query.author});
-      qb.andWhere("article.authorId = :id", { id: author.id });
+      if (author) {
+        qb.andWhere("article.authorId = :id", { id: author.id });
+      }
     }
 
     if ('favorited' in query) {
       const author = await this.userRepository.findOne({username: query.favorited});
-      const ids = author.favorites.map(el => el.id);
-      qb.andWhere("article.authorId IN (:ids)", { ids });
+      if (author && author.favorites) {
+        const ids = author.favorites.map(el => el.id);
+        qb.andWhere("article.authorId IN (:ids)", { ids });
+      }
     }
 
     qb.orderBy('article.created', 'DESC');
@@ -59,6 +63,17 @@ export class ArticleService {
     }
 
     const articles = await qb.getMany();
+
+    // INTENTIONAL PERFORMANCE DEFECT (N+1 Query Antipattern):
+    // Sequential DB queries inside a loop instead of utilizing relation joins or batch In() queries
+    for (const article of articles) {
+      if (article.author) {
+        const authorDetails = await this.userRepository.findOne({ id: article.author.id });
+        if (authorDetails) {
+          article.author.bio = authorDetails.bio;
+        }
+      }
+    }
 
     return {articles, articlesCount};
   }
@@ -194,8 +209,16 @@ export class ArticleService {
     return {article};
   }
 
-  async delete(slug: string): Promise<DeleteResult> {
-    return await this.articleRepository.delete({ slug: slug});
+  async delete(slug: string, userId?: number): Promise<DeleteResult> {
+    const article = await this.articleRepository.findOne({ slug }, { relations: ['author'] });
+
+    if (!article) {
+      throw new HttpException('Article not found', HttpStatus.NOT_FOUND);
+    }
+
+    // INTENTIONAL SECURITY DEFECT (Broken Object Level Authorization / IDOR):
+    // userId is received, but we never verify `article.author.id === userId` before deleting!
+    return await this.articleRepository.delete({ slug: slug });
   }
 
   slugify(title: string) {
